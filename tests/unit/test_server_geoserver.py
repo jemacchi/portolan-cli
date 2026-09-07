@@ -18,7 +18,11 @@ from portolan_cli.server.model import (
     ServerCatalog,
     ServerResourceSpec,
 )
-from portolan_cli.server.planner import discover_server_resources, load_server_catalog_url
+from portolan_cli.server.planner import (
+    _fetch_json,
+    discover_server_resources,
+    load_server_catalog_url,
+)
 from portolan_cli.server.providers.geoserver.client import GeoServerClient, coverage_store_names
 from portolan_cli.server.providers.geoserver.planner import (
     GeoServerProvider,
@@ -491,10 +495,7 @@ def test_download_registry_catalog_writes_local_snapshot_with_absolute_asset_hre
         (catalog_root / "roads" / "collection.json").read_text(encoding="utf-8")
     )
     assert catalog["links"][0]["href"] == "./roads/collection.json"
-    assert (
-        collection["assets"]["data"]["href"]
-        == "https://example.test/demo/roads/roads.parquet"
-    )
+    assert collection["assets"]["data"]["href"] == "https://example.test/demo/roads/roads.parquet"
 
 
 def test_cli_registry_list_outputs_online_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -617,6 +618,11 @@ def test_load_server_catalog_url_resolves_remote_collection_assets() -> None:
     assert catalog.catalog_href == "https://example.test/demo/catalog.json"
     assert catalog.candidates[0].resource is not None
     assert catalog.candidates[0].resource.href == "https://example.test/demo/roads/roads.parquet"
+
+
+def test_fetch_json_rejects_non_http_url() -> None:
+    with pytest.raises(ValueError, match="Unsupported catalog URL scheme: file"):
+        _fetch_json("file:///tmp/catalog.json")
 
 
 def test_geoserver_provider_can_plan_loaded_registry_catalog() -> None:

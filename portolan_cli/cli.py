@@ -8697,9 +8697,15 @@ def registry_fetch_cmd(
         raise click.ClickException("Use either CATALOG_ID or --all, not both.")
     if not fetch_all and catalog_id is None:
         raise click.ClickException("Provide CATALOG_ID or use --all.")
+    if fetch_all:
+        catalog_ids: tuple[str, ...] = ()
+    else:
+        if catalog_id is None:
+            raise click.ClickException("Provide CATALOG_ID or use --all.")
+        catalog_ids = (catalog_id,)
     entries = _registry_catalog_entries(
         registry_url,
-        () if fetch_all else (catalog_id,),
+        catalog_ids,
         include_stale,
         limit=None,
     )
@@ -8707,10 +8713,7 @@ def registry_fetch_cmd(
         if fetch_all:
             raise click.ClickException("No catalogs found in registry.")
         raise click.ClickException(f"Catalog not found in registry: {catalog_id}")
-    fetched = [
-        (entry, download_registry_catalog(entry.url, output_dir))
-        for entry in entries
-    ]
+    fetched = [(entry, download_registry_catalog(entry.url, output_dir)) for entry in entries]
     if path_only:
         for _entry, catalog_root in fetched:
             click.echo(catalog_root)

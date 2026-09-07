@@ -214,9 +214,7 @@ def _primary_asset(assets: Any) -> tuple[str | None, dict[str, Any] | None]:
     return data_assets[0]
 
 
-def _native_name(
-    asset_key: str | None, href: str, resource_format: ResourceFormat
-) -> str | None:
+def _native_name(asset_key: str | None, href: str, resource_format: ResourceFormat) -> str | None:
     if resource_format == ResourceFormat.GEOPARQUET:
         stem = Path(urlparse(href).path).stem
         if stem:
@@ -330,8 +328,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _fetch_json(url: str) -> dict[str, Any]:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(f"Unsupported catalog URL scheme: {parsed.scheme or 'missing'}")
     request = Request(url, headers={"User-Agent": "portolan-cli/0.8"})
-    with urlopen(request, timeout=30) as response:
+    with urlopen(request, timeout=30) as response:  # nosec B310 - URL scheme checked above.
         data = json.loads(response.read().decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{url} must contain a JSON object")
