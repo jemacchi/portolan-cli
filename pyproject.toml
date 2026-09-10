@@ -271,6 +271,7 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # FileNotFoundError that fails the in-mutation pytest run and aborts the gate.
 also_copy = [
   "scripts/",
+  "docs/reference/",
   ".pip-audit-ignores",
   ".mutation-baseline",
   ".mutation-shards.json",
