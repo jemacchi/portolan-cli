@@ -1,0 +1,185 @@
+"""Portolan registry command tests."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+from click.testing import CliRunner
+
+from portolan_cli.cli import cli
+from portolan_cli.registry import (
+    RegistryCatalogEntry,
+    download_registry_catalog,
+    load_registry_entries,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def _collection(collection_id: str, asset: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "Collection",
+        "stac_version": "1.1.0",
+        "id": collection_id,
+        "description": f"{collection_id} description",
+        "license": "CC-BY-4.0",
+        "extent": {
+            "spatial": {"bbox": [[-71.0, -35.0, -70.0, -34.0]]},
+            "temporal": {"interval": [[None, None]]},
+        },
+        "links": [],
+        "assets": {"data": asset},
+    }
+
+
+def test_registry_entries_use_valid_child_links() -> None:
+    registry = {
+        "links": [
+            {
+                "rel": "child",
+                "href": "https://example.test/a/catalog.json",
+                "title": "A",
+                "portolan_registry:id": "catalog-a",
+                "portolan_registry:status": "valid",
+            },
+            {
+                "rel": "child",
+                "href": "https://example.test/b/catalog.json",
+                "portolan_registry:id": "catalog-b",
+                "portolan_registry:status": "stale",
+            },
+        ]
+    }
+
+    entries = load_registry_entries(
+        "https://registry.test/catalogs.json", fetch_json=lambda url: registry
+    )
+
+    assert [(entry.id, entry.url, entry.title, entry.status) for entry in entries] == [
+        ("catalog-a", "https://example.test/a/catalog.json", "A", "valid")
+    ]
+
+
+def test_download_registry_catalog_writes_local_snapshot_with_absolute_asset_hrefs(
+    tmp_path: Path,
+) -> None:
+    responses = {
+        "https://example.test/demo/catalog.json": {
+            "type": "Catalog",
+            "id": "demo",
+            "links": [
+                {"rel": "child", "href": "./roads/collection.json", "type": "application/json"}
+            ],
+        },
+        "https://example.test/demo/roads/collection.json": _collection(
+            "roads",
+            {
+                "href": "./roads.parquet",
+                "type": "application/vnd.apache.parquet",
+                "roles": ["data"],
+            },
+        ),
+    }
+
+    catalog_root = download_registry_catalog(
+        "https://example.test/demo/catalog.json",
+        tmp_path,
+        fetch_json=lambda url: responses[url],
+    )
+
+    assert catalog_root == tmp_path / "demo"
+    catalog = json.loads((catalog_root / "catalog.json").read_text(encoding="utf-8"))
+    collection = json.loads(
+        (catalog_root / "roads" / "collection.json").read_text(encoding="utf-8")
+    )
+    assert catalog["links"][0]["href"] == "./roads/collection.json"
+    assert collection["assets"]["data"]["href"] == "https://example.test/demo/roads/roads.parquet"
+
+
+def test_cli_registry_list_outputs_online_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "portolan_cli.registry.load_registry_entries",
+        lambda *args, **kwargs: [
+            RegistryCatalogEntry(
+                id="catalog-a",
+                url="https://example.test/a/catalog.json",
+                title="Catalog A",
+                status="valid",
+            )
+        ],
+    )
+
+    result = CliRunner().invoke(cli, ["registry", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "catalog-a" in result.output
+    assert "https://example.test/a/catalog.json" in result.output
+
+
+def test_cli_registry_fetch_outputs_catalog_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "portolan_cli.registry.load_registry_entries",
+        lambda *args, **kwargs: [
+            RegistryCatalogEntry(
+                id="catalog-a",
+                url="https://example.test/a/catalog.json",
+                title="Catalog A",
+                status="valid",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "portolan_cli.registry.download_registry_catalog",
+        lambda catalog_url, output_dir: tmp_path / "catalog-a",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["registry", "fetch", "catalog-a", "--output", str(tmp_path), "--path-only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == str(tmp_path / "catalog-a")
+
+
+def test_cli_registry_fetch_all_outputs_all_catalog_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entries = [
+        RegistryCatalogEntry(
+            id="catalog-a",
+            url="https://example.test/a/catalog.json",
+            title="Catalog A",
+            status="valid",
+        ),
+        RegistryCatalogEntry(
+            id="catalog-b",
+            url="https://example.test/b/catalog.json",
+            title="Catalog B",
+            status="valid",
+        ),
+    ]
+    monkeypatch.setattr(
+        "portolan_cli.registry.load_registry_entries",
+        lambda *args, **kwargs: entries,
+    )
+    monkeypatch.setattr(
+        "portolan_cli.registry.download_registry_catalog",
+        lambda catalog_url, output_dir: output_dir / catalog_url.split("/")[-2],
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["registry", "fetch", "--all", "--output", str(tmp_path), "--path-only"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        str(tmp_path / "a"),
+        str(tmp_path / "b"),
+    ]

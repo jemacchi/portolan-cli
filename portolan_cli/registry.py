@@ -1,20 +1,29 @@
-"""Load Portolan registry exports."""
+"""Read and fetch Portolan registry exports."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
-
-from portolan_cli.server.model import RegistryCatalogEntry
-from portolan_cli.server.planner import _fetch_json
+from urllib.request import Request, urlopen
 
 DEFAULT_REGISTRY_URL = (
     "https://raw.githubusercontent.com/portolan-sdi/portolan-registry/"
     "refs/heads/main/exports/catalogs.json"
 )
+
+
+@dataclass(frozen=True)
+class RegistryCatalogEntry:
+    """One catalog entry from a Portolan registry export."""
+
+    id: str
+    url: str
+    title: str | None = None
+    status: str | None = None
 
 
 def load_registry_entries(
@@ -61,13 +70,22 @@ def download_registry_catalog(
     *,
     fetch_json: Callable[[str], dict[str, Any]] | None = None,
 ) -> Path:
-    """Download a published catalog snapshot for local server commands."""
+    """Download a published catalog snapshot for local workflows."""
     fetch = fetch_json or _fetch_json
     catalog = fetch(catalog_url)
     catalog_id = str(catalog.get("id") or _fallback_catalog_id(catalog_url))
     catalog_root = output_dir / catalog_id
     _write_catalog_tree(catalog_url, catalog, catalog_url, catalog_root, fetch)
     return catalog_root
+
+
+def _fetch_json(url: str) -> dict[str, Any]:
+    request = Request(url, headers={"User-Agent": "portolan-cli"})
+    with urlopen(request, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if not isinstance(data, dict):
+        raise TypeError(f"Expected JSON object from {url}")
+    return data
 
 
 def _write_catalog_tree(
