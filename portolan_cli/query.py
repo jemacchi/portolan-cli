@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from portolan import Asset, AssetFormat, Catalog, Collection, Item
 
 from portolan_cli.constants import (
     MTIME_TOLERANCE_SECONDS,
@@ -60,74 +62,17 @@ def list_items(
     Returns:
         List of ItemInfo objects.
     """
-    # Catalog at root level
     catalog_path = catalog_root / "catalog.json"
-
     if not catalog_path.exists():
         return []
 
     items: list[ItemInfo] = []
-
-    # Scan root-level directories for collections
-    for col_dir in catalog_root.iterdir():
-        if not col_dir.is_dir():
+    for collection in _iter_catalog_collections(catalog_root):
+        col_id = _collection_id(collection)
+        if collection_id and collection_id not in {col_id, _collection_dir_name(collection)}:
             continue
-
-        # Skip .portolan and hidden directories
-        if col_dir.name.startswith("."):
-            continue
-
-        col_id = col_dir.name
-
-        # Filter by collection if specified
-        if collection_id and col_id != collection_id:
-            continue
-
-        collection_path = col_dir / "collection.json"
-        if not collection_path.exists():
-            continue
-
-        # Load collection to get items
-        collection_data = json.loads(collection_path.read_text(encoding="utf-8"))
-
-        for link in collection_data.get("links", []):
-            if link.get("rel") != "item":
-                continue
-
-            # Parse item href to get item ID
-            item_href = link.get("href", "")
-            # href is like ./item-id/item-id.json
-            item_id = item_href.split("/")[1] if "/" in item_href else item_href
-
-            # Load item
-            item_path = col_dir / item_href.removeprefix("./")
-            if not item_path.exists():
-                continue
-
-            item_data = json.loads(item_path.read_text(encoding="utf-8"))
-
-            # Determine format from assets
-            format_type = FormatType.UNKNOWN
-            asset_paths: list[str] = []
-            for _asset_key, asset in item_data.get("assets", {}).items():
-                href = asset.get("href", "")
-                asset_paths.append(href)
-                if href.endswith(".parquet"):
-                    format_type = FormatType.VECTOR
-                elif href.endswith(".tif"):
-                    format_type = FormatType.RASTER
-
-            items.append(
-                ItemInfo(
-                    item_id=item_data.get("id", item_id),
-                    collection_id=col_id,
-                    format_type=format_type,
-                    bbox=item_data.get("bbox", [0, 0, 0, 0]),
-                    asset_paths=asset_paths,
-                    title=item_data.get("properties", {}).get("title"),
-                    description=item_data.get("properties", {}).get("description"),
-                )
-            )
+        for item in _collection_items(collection):
+            items.append(_item_info(item, col_id))
 
     return items
 
@@ -153,34 +98,111 @@ def get_item_info(
 
     collection_id, item_id = stac_id.split("/", 1)
 
-    # STAC at root level
+    collection_path = catalog_root / collection_id / "collection.json"
+    if collection_path.exists():
+        try:
+            collection = Collection.open(collection_path)
+            for item in _collection_items(collection):
+                if item.id == item_id:
+                    return _item_info(item, collection_id)
+        except (OSError, TypeError, ValueError):
+            pass
+
     item_path = catalog_root / collection_id / item_id / f"{item_id}.json"
+    if item_path.exists():
+        try:
+            return _item_info(Item.open(item_path), collection_id)
+        except (OSError, TypeError, ValueError):
+            pass
 
-    if not item_path.exists():
-        raise KeyError(f"Item not found: {stac_id}")
+    raise KeyError(f"Item not found: {stac_id}")
 
-    item_data = json.loads(item_path.read_text(encoding="utf-8"))
 
-    # Determine format from assets
-    format_type = FormatType.UNKNOWN
-    asset_paths: list[str] = []
-    for asset in item_data.get("assets", {}).values():
-        href = asset.get("href", "")
-        asset_paths.append(href)
-        if href.endswith(".parquet"):
-            format_type = FormatType.VECTOR
-        elif href.endswith(".tif"):
-            format_type = FormatType.RASTER
+def _iter_catalog_collections(catalog_root: Path) -> list[Collection]:
+    try:
+        collections = list(Catalog.open(catalog_root).collections())
+    except (OSError, TypeError, ValueError):
+        collections = []
 
+    seen = {_collection_json_path(collection) for collection in collections}
+    for child in sorted(catalog_root.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        collection_json = child / "collection.json"
+        if collection_json in seen or not collection_json.exists():
+            continue
+        try:
+            collections.append(Collection.open(collection_json))
+        except (OSError, TypeError, ValueError):
+            continue
+    return collections
+
+
+def _collection_items(collection: Collection) -> list[Item]:
+    items: list[Item] = []
+    for link in collection.item_links():
+        try:
+            item = Item.open(link.href)
+        except (OSError, TypeError, ValueError):
+            continue
+        if item.data.get("type") == "Feature":
+            items.append(item)
+    return items
+
+
+def _collection_id(collection: Collection) -> str:
+    return collection.id or _collection_dir_name(collection)
+
+
+def _collection_dir_name(collection: Collection) -> str:
+    path = _href_to_path(collection.href)
+    if path is not None:
+        return path.parent.name
+    return collection.id
+
+
+def _collection_json_path(collection: Collection) -> Path | None:
+    return _href_to_path(collection.href)
+
+
+def _href_to_path(href: str) -> Path | None:
+    parsed = urlparse(href)
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path))
+    if parsed.scheme:
+        return None
+    return Path(href)
+
+
+def _item_info(item: Item, collection_id: str) -> ItemInfo:
+    data = item.data
+    properties = data.get("properties")
+    if not isinstance(properties, dict):
+        properties = {}
+    bbox = data.get("bbox")
+    if not isinstance(bbox, list):
+        bbox = [0, 0, 0, 0]
+    assets = list(item.assets())
     return ItemInfo(
-        item_id=item_data.get("id", item_id),
+        item_id=item.id,
         collection_id=collection_id,
-        format_type=format_type,
-        bbox=item_data.get("bbox", [0, 0, 0, 0]),
-        asset_paths=asset_paths,
-        title=item_data.get("properties", {}).get("title"),
-        description=item_data.get("properties", {}).get("description"),
+        format_type=_format_type(assets),
+        bbox=bbox,
+        asset_paths=[href for asset in assets if isinstance(href := asset.raw.get("href"), str)],
+        title=properties.get("title") if isinstance(properties.get("title"), str) else None,
+        description=properties.get("description")
+        if isinstance(properties.get("description"), str)
+        else None,
     )
+
+
+def _format_type(assets: list[Asset]) -> FormatType:
+    formats = {asset.format for asset in assets}
+    if AssetFormat.COG in formats:
+        return FormatType.RASTER
+    if AssetFormat.GEOPARQUET in formats:
+        return FormatType.VECTOR
+    return FormatType.UNKNOWN
 
 
 def is_current(

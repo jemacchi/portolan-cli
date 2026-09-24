@@ -19,9 +19,10 @@ Files preserved (all data):
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
+
+from portolan import is_stac_metadata as _is_portolan_stac_metadata
 
 from portolan_cli.constants import PORTOLAN_DIR
 
@@ -48,18 +49,7 @@ def is_stac_metadata(path: Path) -> bool:
         >>> is_stac_metadata(Path("data.parquet"))
         False
     """
-    # Only check JSON files
-    if path.suffix.lower() != ".json":
-        return False
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return False
-        stac_type = data.get("type")
-        return stac_type in ("Catalog", "Collection", "Feature")
-    except (json.JSONDecodeError, OSError):
-        return False
+    return _is_portolan_stac_metadata(path)
 
 
 def is_versions_json(path: Path) -> bool:

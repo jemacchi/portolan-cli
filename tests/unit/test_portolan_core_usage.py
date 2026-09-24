@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from portolan import AssetFormat
 
 from portolan_cli import inspect as inspect_module
+from portolan_cli import query as query_module
 from portolan_cli import readme as readme_module
 from portolan_cli import stac_parquet
+from portolan_cli.formats import FormatType
 
 pytestmark = pytest.mark.unit
 
@@ -298,3 +301,138 @@ def test_generate_catalog_readme_uses_portolan_catalog(
 
     assert opened == [tmp_path / "catalog.json"]
     assert readme.startswith("# Demo catalog\n\nFrom catalog")
+
+
+def test_query_list_items_uses_portolan_catalog_collection_and_item(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    catalog_opened: list[Path] = []
+    item_opened: list[str] = []
+    collection_json = tmp_path / "roads" / "collection.json"
+    collection_json.parent.mkdir()
+    collection_json.write_text("{}", encoding="utf-8")
+    (tmp_path / "catalog.json").write_text("{}", encoding="utf-8")
+
+    class FakeAsset:
+        format = AssetFormat.GEOPARQUET
+        raw = {"href": "roads.parquet"}
+
+    class FakeItem:
+        id = "road-a"
+        data = {
+            "type": "Feature",
+            "bbox": [-71.0, -35.0, -70.0, -34.0],
+            "properties": {"title": "Road A"},
+        }
+
+        @classmethod
+        def open(cls, href: str) -> FakeItem:
+            item_opened.append(href)
+            return cls()
+
+        def assets(self) -> Iterator[FakeAsset]:
+            yield FakeAsset()
+
+    class FakeCollection:
+        id = "roads"
+        href = collection_json.as_uri()
+
+        def item_links(self) -> Iterator[LinkStub]:
+            yield LinkStub("file:///catalog/roads/road-a.json", {"href": "./road-a.json"})
+
+    class FakeCatalog:
+        @classmethod
+        def open(cls, path: Path) -> FakeCatalog:
+            catalog_opened.append(path)
+            return cls()
+
+        def collections(self) -> Iterator[FakeCollection]:
+            yield FakeCollection()
+
+    monkeypatch.setattr(query_module, "Catalog", FakeCatalog)
+    monkeypatch.setattr(query_module, "Item", FakeItem)
+
+    [item] = query_module.list_items(tmp_path)
+
+    assert catalog_opened == [tmp_path]
+    assert item_opened == ["file:///catalog/roads/road-a.json"]
+    assert item.item_id == "road-a"
+    assert item.collection_id == "roads"
+    assert item.format_type is FormatType.VECTOR
+    assert item.asset_paths == ["roads.parquet"]
+
+
+def test_query_fallback_collections_use_portolan_collection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    collection_opened: list[Path] = []
+    collection_dir = tmp_path / "roads"
+    collection_dir.mkdir()
+    collection_json = collection_dir / "collection.json"
+    collection_json.write_text("{}", encoding="utf-8")
+    (tmp_path / "catalog.json").write_text("{}", encoding="utf-8")
+
+    class FakeCatalog:
+        @classmethod
+        def open(cls, _path: Path) -> FakeCatalog:
+            return cls()
+
+        def collections(self) -> Iterator[Any]:
+            return iter(())
+
+    class FakeCollection:
+        id = "roads"
+        href = collection_json.as_uri()
+
+        @classmethod
+        def open(cls, path: Path) -> FakeCollection:
+            collection_opened.append(path)
+            return cls()
+
+        def item_links(self) -> Iterator[Any]:
+            return iter(())
+
+    monkeypatch.setattr(query_module, "Catalog", FakeCatalog)
+    monkeypatch.setattr(query_module, "Collection", FakeCollection)
+
+    assert query_module.list_items(tmp_path) == []
+    assert collection_opened == [collection_json]
+
+
+def test_clean_stac_detection_uses_portolan_core(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from portolan_cli import clean as clean_module
+
+    checked: list[Path] = []
+
+    def fake_is_stac_metadata(path: Path) -> bool:
+        checked.append(path)
+        return True
+
+    monkeypatch.setattr(clean_module, "_is_portolan_stac_metadata", fake_is_stac_metadata)
+    path = tmp_path / "catalog.json"
+
+    assert clean_module.is_stac_metadata(path) is True
+    assert checked == [path]
+
+
+def test_logo_reads_catalog_with_portolan_core(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from portolan_cli import logo as logo_module
+
+    opened: list[Path] = []
+
+    class FakeCatalog:
+        data = {"id": "demo"}
+
+        @classmethod
+        def open(cls, path: Path) -> FakeCatalog:
+            opened.append(path)
+            return cls()
+
+    monkeypatch.setattr(logo_module, "Catalog", FakeCatalog)
+
+    assert logo_module._read_root_catalog(tmp_path) == {"id": "demo"}
+    assert opened == [tmp_path]

@@ -5444,6 +5444,8 @@ def _generate_readme_content(
     Raises:
         SystemExit: On YAML parse errors.
     """
+    from portolan import Catalog
+
     from portolan_cli.config import load_merged_metadata
     from portolan_cli.errors import ConfigInvalidStructureError
     from portolan_cli.readme import (
@@ -5488,7 +5490,7 @@ def _generate_readme_content(
             if stac_file == "collection.json":
                 stac = load_collection_stac(target_dir)
             else:
-                stac = json.loads(stac_path.read_text(encoding="utf-8"))
+                stac = Catalog.open(stac_path).data
             break
 
     # Load merged metadata
