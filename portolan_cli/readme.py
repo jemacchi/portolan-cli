@@ -36,6 +36,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import quote
 
+from portolan import Catalog, Collection, Item
+
 from portolan_cli.agents_md import markdown_link_gap
 from portolan_cli.agents_md import visible_stac_files as _visible_stac_files
 from portolan_cli.config import load_merged_metadata
@@ -776,10 +778,9 @@ def _read_item(item_path: Path) -> dict[str, Any] | None:
     generation skips the item rather than failing the whole catalog.
     """
     try:
-        data = json.loads(item_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return Item.open(item_path).data
+    except (OSError, TypeError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
 
 
 def _rebase_item_assets(item: dict[str, Any], item_dir: str) -> dict[str, Any]:
@@ -814,7 +815,7 @@ def load_collection_stac(collection_path: Path) -> dict[str, Any]:
     if not collection_json_path.exists():
         return {}
 
-    stac: dict[str, Any] = json.loads(collection_json_path.read_text(encoding="utf-8"))
+    stac = Collection.open(collection_json_path).data
 
     items: list[dict[str, Any]] = []
     for href, item_path in owned_item_hrefs(collection_json_path):
@@ -909,26 +910,21 @@ def aggregate_catalog_extent(catalog_path: Path) -> dict[str, Any]:
         - temporal_end: Latest end datetime (ISO string) or None
         - collections: List of collection IDs
     """
-    collections: list[str] = []
+    collection_ids: list[str] = []
     bboxes: list[list[float]] = []
     temporal_starts: list[str] = []
     temporal_ends: list[str] = []
 
-    # Find all collection.json files in immediate subdirectories
-    for subdir in catalog_path.iterdir():
-        if not subdir.is_dir() or subdir.name.startswith("."):
-            continue
-
-        collection_json = subdir / "collection.json"
-        if not collection_json.exists():
-            continue
-
-        try:
-            data = json.loads(collection_json.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-
-        collections.append(data.get("id", subdir.name))
+    try:
+        collection_objects = list(Catalog.open(catalog_path).collections())
+    except (OSError, TypeError, ValueError):
+        collection_objects = []
+    for collection in collection_objects:
+        data = collection.data
+        collection_id = data.get("id")
+        if not isinstance(collection_id, str):
+            collection_id = Path(collection.href).parent.name
+        collection_ids.append(collection_id)
         bbox, start, end = _extract_collection_extent(data)
 
         if bbox:
@@ -942,7 +938,7 @@ def aggregate_catalog_extent(catalog_path: Path) -> dict[str, Any]:
         "bbox": _compute_bbox_envelope(bboxes),
         "temporal_start": min(temporal_starts) if temporal_starts else None,
         "temporal_end": max(temporal_ends) if temporal_ends else None,
-        "collections": collections,
+        "collections": collection_ids,
     }
 
 
@@ -984,8 +980,8 @@ def _add_collections_section(
 
         if coll_json.exists():
             try:
-                stac = json.loads(coll_json.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+                stac = Collection.open(coll_json).data
+            except (OSError, TypeError, ValueError):
                 stac = {"id": coll_id}
 
         # metadata.yaml title/description override the STAC values (#534). A
@@ -1075,8 +1071,8 @@ def generate_catalog_readme(catalog_path: Path) -> str:
     catalog: dict[str, Any] = {}
     if catalog_json.exists():
         try:
-            catalog = json.loads(catalog_json.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            catalog = Catalog.open(catalog_json).data
+        except (OSError, TypeError, ValueError):
             pass
 
     # Load merged metadata
