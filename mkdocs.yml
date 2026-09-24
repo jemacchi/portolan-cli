@@ -69,6 +69,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Examples: examples.md
+  - Core API and plugins: core-and-plugins.md
   - Reference:
     - Overview: reference/index.md
     - CLI Reference: reference/cli.md

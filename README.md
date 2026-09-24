@@ -77,6 +77,10 @@ We plan to add more tutorials over time.
 See the [full documentation](https://portolan-sdi.github.io/portolan-cli/).
 It includes an auto-generated [CLI reference](https://portolan-sdi.github.io/portolan-cli/reference/cli/)
 and [Python API reference](https://portolan-sdi.github.io/portolan-cli/reference/python/).
+The [core API and plugins guide](https://portolan-sdi.github.io/portolan-cli/core-and-plugins/)
+explains which
+behavior belongs in `portolan-python`, which behavior stays in the CLI, and how
+optional command plugins are mounted.
 
 ## Development
 
