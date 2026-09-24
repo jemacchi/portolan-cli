@@ -47,6 +47,7 @@ dependencies = [
     "lxml>=6.1.0", # CVE-2026-41066 fix (transitive via owslib, pinned for security)
     "pillow>=12.3.0", # PYSEC-2026-2253..2257 fix (transitive via rasterio, pinned for security)
     "pmtiles>=3.0.0", # PMTiles metadata reading (header, bounds, zoom levels)
+    "portolan-python @ git+ssh://git@github.com/jemacchi/portolan-python.git@main",
     "pyogrio>=0.7.0", # FlatGeobuf metadata reading (transitive via geoparquet-io, but we import directly)
     "pygments>=2.20.0", # CVE-2026-4539 fix (transitive via rich, pinned for security)
     "requests>=2.33.0", # CVE-2026-25645 fix (transitive, pinned for security)
@@ -118,6 +119,9 @@ docs = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["portolan_cli"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # ---------- commitizen ----------
 

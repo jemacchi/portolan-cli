@@ -8622,7 +8622,7 @@ def _registry_catalog_entries(
     include_stale: bool,
     limit: int | None,
 ) -> Any:
-    from portolan_cli.registry import DEFAULT_REGISTRY_URL, load_registry_entries
+    from portolan import DEFAULT_REGISTRY_URL, load_registry_entries
 
     return load_registry_entries(
         registry_url or DEFAULT_REGISTRY_URL,
@@ -8690,7 +8690,7 @@ def registry_fetch_cmd(
     json_output: bool,
 ) -> None:
     """Fetch registry catalogs for local workflows."""
-    from portolan_cli.registry import download_registry_catalog
+    from portolan import download_registry_catalog
 
     use_json = should_output_json(ctx, json_output)
     if fetch_all and catalog_id is not None:
