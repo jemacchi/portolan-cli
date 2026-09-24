@@ -894,6 +894,32 @@ def _compute_bbox_envelope(bboxes: list[list[float]]) -> list[float] | None:
     return result.bbox  # None if all invalid
 
 
+def _catalog_collections_for_readme(catalog_path: Path) -> list[Collection]:
+    """Load catalog collections through portolan-python.
+
+    Old catalog READMEs also worked for local catalog directories that had child
+    collection folders but no child links in ``catalog.json``. Keep that local
+    convenience, but route each collection document through portolan-python.
+    """
+    try:
+        collection_objects = list(Catalog.open(catalog_path).collections())
+    except (OSError, TypeError, ValueError):
+        collection_objects = []
+
+    if collection_objects:
+        return collection_objects
+
+    collections: list[Collection] = []
+    for child in sorted(catalog_path.iterdir()):
+        collection_json = child / "collection.json"
+        if collection_json.exists():
+            try:
+                collections.append(Collection.open(collection_json))
+            except (OSError, TypeError, ValueError):
+                continue
+    return collections
+
+
 def aggregate_catalog_extent(catalog_path: Path) -> dict[str, Any]:
     """Aggregate extent information from all collections in a catalog.
 
@@ -915,11 +941,7 @@ def aggregate_catalog_extent(catalog_path: Path) -> dict[str, Any]:
     temporal_starts: list[str] = []
     temporal_ends: list[str] = []
 
-    try:
-        collection_objects = list(Catalog.open(catalog_path).collections())
-    except (OSError, TypeError, ValueError):
-        collection_objects = []
-    for collection in collection_objects:
+    for collection in _catalog_collections_for_readme(catalog_path):
         data = collection.data
         collection_id = data.get("id")
         if not isinstance(collection_id, str):
