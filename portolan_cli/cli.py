@@ -47,6 +47,7 @@ from portolan_cli.licensing import (
 from portolan_cli.metadata.fix import FixAction, FixReport, FixResult
 from portolan_cli.output import detail, error, success, warn
 from portolan_cli.output import info as info_output
+from portolan_cli.plugins import load_cli_plugins
 from portolan_cli.query import ItemInfo
 from portolan_cli.remove import remove_files
 from portolan_cli.scan.core import (
@@ -8735,3 +8736,6 @@ def registry_fetch_cmd(
         return
     for entry, catalog_root in fetched:
         success(f"Fetched {entry.id} to {catalog_root}")
+
+
+load_cli_plugins(cli)
