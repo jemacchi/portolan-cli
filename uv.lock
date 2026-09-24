@@ -4772,7 +4772,7 @@ dev = [
 [[package]]
 name = "portolan-python"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/jemacchi/portolan-python.git?rev=main#18e241ce6bc23441241431cd87db26d904e976ec" }
+source = { git = "ssh://git@github.com/jemacchi/portolan-python.git?rev=main#9caa283762d5f763542693343430e57e20d99209" }
 
 [[package]]
 name = "prompt-toolkit"
