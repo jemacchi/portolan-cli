@@ -28,17 +28,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
+from urllib.parse import unquote, urlparse
 
+from portolan import Catalog, Collection
 from rashid.catalog import is_absolute_href
 
 from portolan_cli.constants import ROLE_COLLECTION_MIRROR
 from portolan_cli.json_io import write_json_atomic
 from portolan_cli.output import info, warn
 from portolan_cli.sync.checksums import file_fields
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # Constants
 PARQUET_FILENAME = "items.parquet"
@@ -68,23 +68,24 @@ def owned_item_hrefs(node_json_path: Path) -> list[tuple[str, Path]]:
     if not node_json_path.exists():
         return []
 
-    data = json.loads(node_json_path.read_text(encoding="utf-8"))
-    base_dir = node_json_path.parent
-    owned: list[tuple[str, Path]] = []
+    if node_json_path.name == "collection.json":
+        links = Collection.open(node_json_path).item_links()
+    elif node_json_path.name == "catalog.json":
+        links = Catalog.open(node_json_path).item_links()
+    else:
+        return []
+    return [
+        (raw_href, _href_to_path(link.href))
+        for link in links
+        if isinstance(raw_href := link.raw.get("href"), str) and raw_href
+    ]
 
-    for link in data.get("links", []):
-        href = link.get("href", "")
-        if not isinstance(href, str) or not href:
-            continue
-        rel = link.get("rel")
-        if rel == "item":
-            owned.append((href, _resolve_href(base_dir, href)))
-        elif rel == "child":
-            child_path = _resolve_href(base_dir, href)
-            if child_path.name == "catalog.json":
-                owned.extend(owned_item_hrefs(child_path))
 
-    return owned
+def _href_to_path(href: str) -> Path:
+    parsed = urlparse(href)
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path))
+    return Path(href)
 
 
 def count_items(collection_path: Path) -> int:

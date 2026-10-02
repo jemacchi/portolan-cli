@@ -3,482 +3,19 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+from urllib.error import HTTPError, URLError
 
-import httpx
 import pytest
 from click.testing import CliRunner
 
 from portolan_cli.cli import cli
-from portolan_cli.registry import (
-    RegistryCatalogEntry,
-    _fetch_json,
-    _same_origin_request_validator,
-    download_registry_catalog,
-    load_registry_entries,
-)
+from portolan_cli.registry import RegistryCatalogEntry
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 pytestmark = pytest.mark.unit
-
-
-def _collection(collection_id: str, asset: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "type": "Collection",
-        "stac_version": "1.1.0",
-        "id": collection_id,
-        "description": f"{collection_id} description",
-        "license": "CC-BY-4.0",
-        "extent": {
-            "spatial": {"bbox": [[-71.0, -35.0, -70.0, -34.0]]},
-            "temporal": {"interval": [[None, None]]},
-        },
-        "links": [],
-        "assets": {"data": asset},
-    }
-
-
-def test_registry_entries_use_valid_child_links() -> None:
-    registry = {
-        "links": [
-            {
-                "rel": "child",
-                "href": "https://example.test/a/catalog.json",
-                "title": "A",
-                "portolan_registry:id": "catalog-a",
-                "portolan_registry:status": "valid",
-            },
-            {
-                "rel": "child",
-                "href": "https://example.test/b/catalog.json",
-                "portolan_registry:id": "catalog-b",
-                "portolan_registry:status": "stale",
-            },
-        ]
-    }
-
-    entries = load_registry_entries(
-        "https://registry.test/catalogs.json", fetch_json=lambda url: registry
-    )
-
-    assert [(entry.id, entry.url, entry.title, entry.status) for entry in entries] == [
-        ("catalog-a", "https://example.test/a/catalog.json", "A", "valid")
-    ]
-
-
-def test_registry_entries_resolve_relative_child_urls() -> None:
-    registry = {
-        "links": [
-            {
-                "rel": "child",
-                "href": "../demo/catalog.json",
-                "portolan_registry:id": "demo",
-                "portolan_registry:status": "valid",
-            }
-        ]
-    }
-
-    entries = load_registry_entries(
-        "https://registry.test/exports/catalogs.json",
-        fetch_json=lambda url: registry,
-    )
-
-    assert entries[0].url == "https://registry.test/demo/catalog.json"
-
-
-def test_registry_entries_ignore_malformed_links() -> None:
-    registry = {
-        "links": [
-            "not-an-object",
-            {"rel": "self", "href": "catalogs.json"},
-            {"rel": "child", "href": 42, "portolan_registry:id": "bad-href"},
-            {"rel": "child", "href": "catalog.json"},
-        ]
-    }
-
-    entries = load_registry_entries(fetch_json=lambda url: registry)
-
-    assert entries == []
-
-
-@pytest.mark.parametrize(
-    ("payload", "expected"),
-    [
-        ({"links": []}, {"links": []}),
-        (["not", "an", "object"], TypeError),
-    ],
-)
-def test_fetch_json_validates_response_shape(
-    payload: object,
-    expected: dict[str, Any] | type[Exception],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_client = httpx.Client
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload, request=request)
-
-    def client_factory(**kwargs: object) -> httpx.Client:
-        return original_client(transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setattr(httpx, "Client", client_factory)
-
-    if isinstance(expected, type) and issubclass(expected, Exception):
-        with pytest.raises(expected, match="Expected JSON object"):
-            _fetch_json("https://registry.test/catalogs.json")
-    else:
-        assert _fetch_json("https://registry.test/catalogs.json") == expected
-
-
-def test_registry_entries_filter_ids_include_stale_and_apply_limit() -> None:
-    registry = {
-        "links": [
-            {
-                "rel": "child",
-                "href": f"https://example.test/{catalog_id}/catalog.json",
-                "portolan_registry:id": catalog_id,
-                "portolan_registry:status": status,
-            }
-            for catalog_id, status in [
-                ("catalog-a", "valid"),
-                ("catalog-b", "stale"),
-                ("catalog-c", "valid"),
-            ]
-        ]
-    }
-
-    entries = load_registry_entries(
-        fetch_json=lambda url: registry,
-        catalog_ids={"catalog-b", "catalog-c"},
-        include_stale=True,
-        limit=1,
-    )
-
-    assert entries == [
-        RegistryCatalogEntry(
-            id="catalog-b",
-            url="https://example.test/catalog-b/catalog.json",
-            status="stale",
-        )
-    ]
-
-
-def test_download_registry_catalog_writes_local_snapshot_with_absolute_asset_hrefs(
-    tmp_path: Path,
-) -> None:
-    responses = {
-        "https://example.test/demo/catalog.json": {
-            "type": "Catalog",
-            "id": "demo",
-            "links": [
-                {"rel": "child", "href": "./roads/collection.json", "type": "application/json"}
-            ],
-        },
-        "https://example.test/demo/roads/collection.json": _collection(
-            "roads",
-            {
-                "href": "./roads.parquet",
-                "type": "application/vnd.apache.parquet",
-                "roles": ["data"],
-            },
-        ),
-    }
-
-    catalog_root = download_registry_catalog(
-        "https://example.test/demo/catalog.json",
-        tmp_path,
-        fetch_json=lambda url: responses[url],
-    )
-
-    assert catalog_root == tmp_path / "demo"
-    catalog = json.loads((catalog_root / "catalog.json").read_text(encoding="utf-8"))
-    collection = json.loads(
-        (catalog_root / "roads" / "collection.json").read_text(encoding="utf-8")
-    )
-    assert catalog["links"][0]["href"] == "roads/collection.json"
-    assert collection["assets"]["data"]["href"] == "https://example.test/demo/roads/roads.parquet"
-
-
-def test_download_registry_catalog_rewrites_downloaded_children_to_local_hrefs(
-    tmp_path: Path,
-) -> None:
-    root_url = "https://example.test/demo/catalog.json"
-    child_url = "https://example.test/demo/roads/collection.json"
-    item_url = "https://example.test/demo/roads/item.json"
-    responses = {
-        root_url: {
-            "type": "Catalog",
-            "id": "demo",
-            "links": [
-                {"rel": "self", "href": root_url},
-                {"rel": "child", "href": child_url},
-                {"rel": "child", "href": item_url},
-            ],
-        },
-        child_url: {
-            **_collection("roads", {}),
-            "links": [{"rel": "child", "href": root_url}],
-        },
-        item_url: {"type": "Feature", "id": "road-1"},
-    }
-
-    catalog_root = download_registry_catalog(
-        root_url,
-        tmp_path,
-        fetch_json=lambda url: responses[url],
-    )
-
-    catalog = json.loads((catalog_root / "catalog.json").read_text(encoding="utf-8"))
-    collection = json.loads(
-        (catalog_root / "roads" / "collection.json").read_text(encoding="utf-8")
-    )
-    assert catalog["links"] == [
-        {"rel": "self", "href": root_url},
-        {"rel": "child", "href": "roads/collection.json"},
-        {"rel": "child", "href": item_url},
-    ]
-    assert collection["links"] == [{"rel": "child", "href": "../catalog.json"}]
-
-
-def test_download_registry_catalog_rejects_id_outside_output_directory(tmp_path: Path) -> None:
-    catalog = {"type": "Catalog", "id": "../../outside", "links": []}
-
-    with pytest.raises(ValueError, match="safe directory name"):
-        download_registry_catalog(
-            "https://example.test/demo/catalog.json",
-            tmp_path,
-            fetch_json=lambda url: catalog,
-        )
-
-
-def test_download_registry_catalog_rejects_non_http_url(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="must use HTTP or HTTPS"):
-        download_registry_catalog("file:///tmp/catalog.json", tmp_path)
-
-
-def test_download_registry_catalog_skips_child_cycles(tmp_path: Path) -> None:
-    root_url = "https://example.test/demo/catalog.json"
-    child_url = "https://example.test/demo/roads/collection.json"
-    responses = {
-        root_url: {
-            "type": "Catalog",
-            "id": "demo",
-            "links": [{"rel": "child", "href": "./roads/collection.json"}],
-        },
-        child_url: {
-            **_collection("roads", {}),
-            "links": [{"rel": "child", "href": "../catalog.json"}],
-        },
-    }
-    fetched_urls: list[str] = []
-
-    def fetch_json(url: str) -> dict[str, Any]:
-        fetched_urls.append(url)
-        if fetched_urls.count(url) > 1:
-            raise AssertionError(f"Fetched document twice: {url}")
-        return responses[url]
-
-    download_registry_catalog(root_url, tmp_path, fetch_json=fetch_json)
-
-    assert fetched_urls == [root_url, child_url]
-
-
-@pytest.mark.parametrize(
-    ("child_url", "message"),
-    [
-        ("https://other.test/demo/collection.json", "different origin"),
-        ("https://example.test/demo/../../outside.json", "outside catalog root"),
-    ],
-)
-def test_download_registry_catalog_rejects_unsafe_child_urls_before_fetch(
-    child_url: str,
-    message: str,
-    tmp_path: Path,
-) -> None:
-    root_url = "https://example.test/demo/catalog.json"
-    catalog = {
-        "type": "Catalog",
-        "id": "demo",
-        "links": [{"rel": "child", "href": child_url}],
-    }
-    fetched_urls: list[str] = []
-
-    def fetch_json(url: str) -> dict[str, Any]:
-        fetched_urls.append(url)
-        if url != root_url:
-            raise AssertionError(f"Fetched unsafe child URL: {url}")
-        return catalog
-
-    with pytest.raises(ValueError, match=message):
-        download_registry_catalog(root_url, tmp_path, fetch_json=fetch_json)
-
-    assert fetched_urls == [root_url]
-
-
-def test_download_registry_catalog_rejects_symlink_escape(tmp_path: Path) -> None:
-    root_url = "https://example.test/demo/catalog.json"
-    child_url = "https://example.test/demo/linked/collection.json"
-    output_dir = tmp_path / "output"
-    outside_dir = tmp_path / "outside"
-    catalog_root = output_dir / "demo"
-    outside_dir.mkdir()
-    catalog_root.mkdir(parents=True)
-    (catalog_root / "linked").symlink_to(outside_dir, target_is_directory=True)
-    responses = {
-        root_url: {
-            "type": "Catalog",
-            "id": "demo",
-            "links": [{"rel": "child", "href": child_url}],
-        },
-        child_url: _collection("linked", {}),
-    }
-
-    download_registry_catalog(
-        root_url,
-        output_dir,
-        fetch_json=lambda url: responses[url],
-    )
-
-    assert not (outside_dir / "collection.json").exists()
-    assert (catalog_root / "linked" / "collection.json").exists()
-
-
-def test_download_registry_catalog_rejects_catalog_root_symlink(tmp_path: Path) -> None:
-    output_dir = tmp_path / "output"
-    outside_dir = tmp_path / "outside"
-    output_dir.mkdir()
-    outside_dir.mkdir()
-    (output_dir / "demo").symlink_to(outside_dir, target_is_directory=True)
-
-    with pytest.raises(ValueError, match="Catalog directory must not be a symlink"):
-        download_registry_catalog(
-            "https://example.test/demo/catalog.json",
-            output_dir,
-            fetch_json=lambda url: {"type": "Catalog", "id": "demo", "links": []},
-        )
-
-    assert list(outside_dir.iterdir()) == []
-
-
-def test_download_registry_catalog_rejects_registry_id_mismatch(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="does not match registry id"):
-        download_registry_catalog(
-            "https://example.test/demo/catalog.json",
-            tmp_path,
-            expected_catalog_id="selected-catalog",
-            fetch_json=lambda url: {"type": "Catalog", "id": "other-catalog", "links": []},
-        )
-
-    assert not (tmp_path / "selected-catalog").exists()
-
-
-def test_download_registry_catalog_preserves_snapshot_when_child_fetch_fails(
-    tmp_path: Path,
-) -> None:
-    catalog_root = tmp_path / "demo"
-    catalog_root.mkdir()
-    previous = catalog_root / "catalog.json"
-    previous.write_text('{"id": "previous"}\n', encoding="utf-8")
-    root_url = "https://example.test/demo/catalog.json"
-
-    def fetch_json(url: str) -> dict[str, Any]:
-        if url == root_url:
-            return {
-                "type": "Catalog",
-                "id": "demo",
-                "links": [{"rel": "child", "href": "./missing.json"}],
-            }
-        raise httpx.HTTPStatusError(
-            "Unavailable",
-            request=httpx.Request("GET", url),
-            response=httpx.Response(503),
-        )
-
-    with pytest.raises(httpx.HTTPStatusError):
-        download_registry_catalog(root_url, tmp_path, fetch_json=fetch_json)
-
-    assert previous.read_text(encoding="utf-8") == '{"id": "previous"}\n'
-    assert not list(tmp_path.glob(".demo.staging-*"))
-
-
-def test_download_registry_catalog_rejects_concurrent_download(tmp_path: Path) -> None:
-    (tmp_path / ".demo.lock").touch()
-
-    with pytest.raises(RuntimeError, match="already in progress"):
-        download_registry_catalog(
-            "https://example.test/demo/catalog.json",
-            tmp_path,
-            fetch_json=lambda url: {"type": "Catalog", "id": "demo", "links": []},
-        )
-
-
-def test_download_registry_catalog_ignores_malformed_children_and_assets(tmp_path: Path) -> None:
-    root_url = "https://example.test/demo/catalog.json"
-    child_url = "https://example.test/demo/roads/collection.json"
-    responses = {
-        root_url: {
-            "type": "Catalog",
-            "id": "demo",
-            "links": [
-                "not-an-object",
-                {"rel": "item", "href": "item.json"},
-                {"rel": "child", "href": 42},
-                {"rel": "child", "href": "roads/collection.json"},
-            ],
-        },
-        child_url: {
-            **_collection("roads", {}),
-            "assets": {"metadata": "not-an-object"},
-        },
-    }
-
-    catalog_root = download_registry_catalog(
-        root_url,
-        tmp_path,
-        fetch_json=lambda url: responses[url],
-    )
-
-    collection = json.loads(
-        (catalog_root / "roads" / "collection.json").read_text(encoding="utf-8")
-    )
-    assert collection["assets"] == {"metadata": "not-an-object"}
-
-
-def test_redirect_request_validator_rejects_cross_origin_redirect() -> None:
-    validate = _same_origin_request_validator("https://example.test/demo/catalog.json")
-
-    with pytest.raises(ValueError, match="Redirect changed origin"):
-        validate(httpx.Request("GET", "http://127.0.0.1/private"))
-
-
-def test_download_registry_catalog_rejects_local_path_collisions(tmp_path: Path) -> None:
-    root_url = "https://example.test/demo/catalog.json"
-    first_url = "https://example.test/demo/collection.json?version=1"
-    second_url = "https://example.test/demo/collection.json?version=2"
-    responses = {
-        root_url: {
-            "type": "Catalog",
-            "id": "demo",
-            "links": [
-                {"rel": "child", "href": first_url},
-                {"rel": "child", "href": second_url},
-            ],
-        },
-        first_url: _collection("first", {}),
-        second_url: _collection("second", {}),
-    }
-    fetched_urls: list[str] = []
-
-    def fetch_json(url: str) -> dict[str, Any]:
-        fetched_urls.append(url)
-        return responses[url]
-
-    with pytest.raises(ValueError, match="same local path"):
-        download_registry_catalog(root_url, tmp_path, fetch_json=fetch_json)
-
-    assert fetched_urls == [root_url, first_url]
 
 
 def test_cli_registry_list_outputs_online_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -529,7 +66,7 @@ def test_cli_registry_list_outputs_json(monkeypatch: pytest.MonkeyPatch) -> None
 @pytest.mark.parametrize(
     "failure",
     [
-        httpx.ConnectError("connection refused"),
+        URLError("connection refused"),
         ValueError("Registry URL must use HTTP or HTTPS"),
         TypeError("Expected JSON object"),
     ],
@@ -615,11 +152,7 @@ def test_cli_registry_fetch_reports_download_failure_as_json(
     )
 
     def fail(catalog_url: str, output_dir: Path, **kwargs: object) -> Path:
-        raise httpx.HTTPStatusError(
-            "404 Not Found",
-            request=httpx.Request("GET", catalog_url),
-            response=httpx.Response(404),
-        )
+        raise HTTPError(catalog_url, 404, "Not Found", hdrs=None, fp=None)
 
     monkeypatch.setattr("portolan_cli.registry.download_registry_catalog", fail)
 
@@ -642,8 +175,8 @@ def test_cli_registry_fetch_reports_download_failure_as_json(
         "data": {},
         "errors": [
             {
-                "type": "HTTPStatusError",
-                "message": "Could not download catalog 'catalog-a': 404 Not Found",
+                "type": "HTTPError",
+                "message": "Could not download catalog 'catalog-a': HTTP Error 404: Not Found",
             }
         ],
     }
@@ -660,8 +193,7 @@ def test_cli_registry_fetch_reports_registry_failure_as_json(
     result = CliRunner().invoke(cli, ["registry", "fetch", "catalog-a", "--json"])
 
     assert result.exit_code == 1
-    error = json.loads(result.output)["errors"][0]
-    assert error == {
+    assert json.loads(result.output)["errors"][0] == {
         "type": "ValueError",
         "message": "Could not load Portolan registry: invalid registry response",
     }

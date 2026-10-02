@@ -10,9 +10,10 @@ The output format follows the specified structure.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from portolan import Catalog, Collection
 
 from portolan_cli.formats import FormatType, detect_format
 from portolan_cli.metadata.cog import extract_cog_metadata
@@ -384,7 +385,8 @@ def inspect_collection(collection_path: Path) -> CollectionInfo:
     if not collection_json_path.exists():
         raise FileNotFoundError(f"Collection not found: {collection_path}")
 
-    data = json.loads(collection_json_path.read_text(encoding="utf-8"))
+    collection = Collection.open(collection_json_path)
+    data = collection.data
 
     # Count items the collection owns, descending organizing catalogs (core.md:168-170)
     item_count = count_items(collection_path)
@@ -439,11 +441,9 @@ def inspect_catalog(catalog_root: Path) -> CatalogInfo:
     if not catalog_json_path.exists():
         raise FileNotFoundError(f"Catalog not found: {catalog_root}")
 
-    data = json.loads(catalog_json_path.read_text(encoding="utf-8"))
-
-    # Count collections from child links
-    child_links = [link for link in data.get("links", []) if link.get("rel") == "child"]
-    collection_count = len(child_links)
+    catalog = Catalog.open(catalog_json_path)
+    data = catalog.data
+    collection_count = len(list(catalog.collections()))
 
     return CatalogInfo(
         catalog_id=data.get("id", catalog_root.name),

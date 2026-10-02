@@ -17,7 +17,9 @@ flowchart TD
     user([User or Agent]) --> CLI
     subgraph CLI["CLI layer (cli.py, thin Click shell)"]
         cmds["commands: init list status info check scan add rm<br/>push pull sync clone clean readme logo stac-geoparquet<br/>groups: config metadata extract version skills registry"]
+        plugins["plugins.py<br/>portolan.cli.plugins entry points"]
     end
+    core["portolan-python<br/>catalog model, traversal, registry"]
     subgraph LIB["Library layer (all logic)"]
         catalog["catalog.py<br/>find_catalog_root, init_catalog"]
         dataset["add.py<br/>add/rm orchestration + STAC build"]
@@ -44,6 +46,8 @@ flowchart TD
         object[("Object storage<br/>S3, GCS, Azure")]
     end
     cmds --> catalog
+    cmds --> core
+    plugins --> cmds
     cmds --> dataset
     cmds --> scan
     cmds --> syncmod
@@ -76,6 +80,10 @@ and every command live. Top-level commands: `init`, `list`, `status`, `info`,
 or rename a command, the AST in `scripts/validate_agents_md.py` re-reads these
 decorators, so the root `AGENTS.md` command references must stay accurate.
 
+`plugins.py` mounts optional Click commands from the `portolan.cli.plugins`
+entry point group. `PORTOLAN_CLI_PLUGINS` selects installed plugins or disables
+them with `none`. Plugin packages own their commands and dependencies.
+
 ## Library layer (all logic lives here, never in cli.py)
 
 `cli.py` parses flags, resolves the catalog root, loads `.env`, and delegates.
@@ -84,6 +92,11 @@ build + conversion + versioning), `push.py`/`pull.py`/`sync.py` (remote I/O),
 `scan*.py` + `check.py` + `validation/` (discovery and validation), and
 `version_ops.py` (the only bridge from the library to a backend). See the
 subsystem table below and the path-scoped rules for each.
+
+Portolan catalog semantics come from the external `portolan-python` package.
+CLI modules use its catalog model for registry access, traversal, metadata
+detection, inspection, README input, and query input. Format conversion and
+storage workflows remain in this repository.
 
 ## Backends layer and protocol fidelity
 
