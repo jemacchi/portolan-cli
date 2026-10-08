@@ -31,12 +31,13 @@ Two spec details drive the shape of the code:
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from portolan import Catalog
 
 from portolan_cli.errors import (
     CatalogNotFoundError,
@@ -210,13 +211,10 @@ def _existing_logo_file(catalog_root: Path, link: dict[str, Any]) -> Path | None
 
 def _read_root_catalog(catalog_root: Path) -> dict[str, Any]:
     """Parse the root ``catalog.json``, or report the directory as no catalog."""
-    catalog_json = catalog_root / "catalog.json"
     try:
-        data = json.loads(catalog_json.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        data = Catalog.open(catalog_root).data
+    except (OSError, TypeError, ValueError) as exc:
         raise CatalogNotFoundError(str(catalog_root)) from exc
-    if not isinstance(data, dict):
-        raise CatalogNotFoundError(str(catalog_root))
     return data
 
 

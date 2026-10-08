@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from portolan_cli.sync.pull import PullResult
 
 import click
-import httpx
 from rashid.model import Severity as RashidSeverity
 
 from portolan_cli.add import AddFailure, add_files
@@ -51,6 +50,7 @@ from portolan_cli.licensing import (
 from portolan_cli.metadata.fix import FixAction, FixReport, FixResult
 from portolan_cli.output import detail, error, success, warn
 from portolan_cli.output import info as info_output
+from portolan_cli.plugins import load_cli_plugins
 from portolan_cli.remove import remove_files
 from portolan_cli.scan.core import (
     IssueType,
@@ -5538,6 +5538,8 @@ def _generate_readme_content(
     Raises:
         SystemExit: On YAML parse errors.
     """
+    from portolan import Catalog
+
     from portolan_cli.config import load_merged_metadata
     from portolan_cli.errors import ConfigInvalidStructureError
     from portolan_cli.readme import (
@@ -5582,7 +5584,7 @@ def _generate_readme_content(
             if stac_file == "collection.json":
                 stac = load_collection_stac(target_dir)
             else:
-                stac = json.loads(stac_path.read_text(encoding="utf-8"))
+                stac = Catalog.open(stac_path).data
             break
 
     # Load merged metadata
@@ -8837,7 +8839,7 @@ def registry_list_cmd(
     use_json = should_output_json(ctx, json_output)
     try:
         entries = _registry_catalog_entries(registry_url, catalog_id, include_stale, limit)
-    except (httpx.HTTPError, ValueError, TypeError) as err:
+    except (OSError, ValueError, TypeError) as err:
         _fail_registry_command(
             "registry list",
             "Could not load Portolan registry",
@@ -8907,7 +8909,7 @@ def registry_fetch_cmd(
             include_stale,
             limit=None,
         )
-    except (httpx.HTTPError, ValueError, TypeError) as err:
+    except (OSError, ValueError, TypeError) as err:
         _fail_registry_command(
             "registry fetch",
             "Could not load Portolan registry",
@@ -8926,7 +8928,7 @@ def registry_fetch_cmd(
                 output_dir,
                 expected_catalog_id=entry.id,
             )
-        except (httpx.HTTPError, OSError, RuntimeError, TypeError, ValueError) as err:
+        except (OSError, RuntimeError, TypeError, ValueError) as err:
             _fail_registry_command(
                 "registry fetch",
                 f"Could not download catalog '{entry.id}'",
@@ -8955,3 +8957,6 @@ def registry_fetch_cmd(
         return
     for entry, catalog_root in fetched:
         success(f"Fetched {entry.id} to {catalog_root}")
+
+
+load_cli_plugins(cli)
